@@ -129,7 +129,8 @@ def split(boundaries, country, out):
                                                                    "geometry": g}]}, w)
         extracts.append({"output": rid + ".osm.pbf", "polygon": {"file_name": poly, "file_type": "geojson"}})
         # A region with a country code of its own (the Åland Islands: AX) — the app finds its maps by the country.
-        regions.append({"id": rid, "iso": conf.get("iso_by_region", {}).get(rid, iso), "names": names,
+        own_iso = next((v for k, v in conf.get("iso_by_region", {}).items() if rid.startswith(k)), iso)
+        regions.append({"id": rid, "iso": own_iso, "names": names,
                         "box": [round(v, 5) for v in box(g)], "shape": outline(g)})
     regions.sort(key=lambda r: r["id"])
     with open(os.path.join(out, "extract.json"), "w", encoding="utf-8") as w:
