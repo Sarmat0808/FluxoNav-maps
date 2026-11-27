@@ -1,7 +1,10 @@
 name: Regional maps
 
-# A country's regions as Mapsforge maps (see README.md): run by hand for a country of countries.json. The maps go to a
-# release «<country>-<date>»; catalog.json in the release «catalog» lists the latest maps of every country.
+# A country's regions as Mapsforge maps (see README.md): run by hand for a country of countries.json.
+#  1. «split»: the country's data cut into its regions, with land and sea — the pieces go to a working release;
+#  2. «map»: every region on a runner of its own (at the same time), its map uploaded to «<country>-<date>» as soon as
+#     it is written (the progress is seen in that release);
+#  3. «catalog»: catalog.json in the release «catalog» lists the latest maps of every country; the working release goes.
 on:
   workflow_dispatch:
     inputs:
@@ -13,32 +16,25 @@ on:
 permissions:
   contents: write
 
+env:
+  GH_TOKEN: ${{ github.token }}
+  COUNTRY: ${{ inputs.country }}
+
 jobs:
-  maps:
+  split:
     runs-on: ubuntu-latest
-    timeout-minutes: 340
-    env:
-      GH_TOKEN: ${{ github.token }}
-      COUNTRY: ${{ inputs.country }}
+    timeout-minutes: 120
+    outputs:
+      regions: ${{ steps.list.outputs.regions }}
+      tag: ${{ steps.list.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Tools (osmium, GDAL, osmosis with the Mapsforge map writer)
+      - name: Tools (osmium, GDAL)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq osmium-tool gdal-bin > /dev/null
           osmium --version | head -1
-          curl -sfL --retry 5 --retry-all-errors --retry-delay 10 -o osmosis.zip https://github.com/openstreetmap/osmosis/releases/download/0.49.2/osmosis-0.49.2.zip
-          unzip -q osmosis.zip -d osmosis
-          LIB=$(dirname "$(find osmosis -name 'osmosis-core-*.jar' | head -1)")
-          curl -sfL --retry 5 --retry-all-errors --retry-delay 10 -o "$LIB/mapsforge-map-writer-0.25.0-jar-with-dependencies.jar" \
-            https://repo1.maven.org/maven2/org/mapsforge/mapsforge-map-writer/0.25.0/mapsforge-map-writer-0.25.0-jar-with-dependencies.jar
-          echo "LIB=$LIB" >> "$GITHUB_ENV"
 
       - name: The country's OpenStreetMap data (Geofabrik)
         run: |
@@ -49,14 +45,13 @@ jobs:
       - name: Its regions (OpenStreetMap's own boundaries)
         run: |
           osmium tags-filter country.osm.pbf r/boundary=administrative -o boundaries.osm.pbf --overwrite
-          osmium fileinfo -e boundaries.osm.pbf | grep -E "Number of (nodes|ways|relations)" || true
-          osmium export boundaries.osm.pbf -o boundaries.geojson -f geojson --geometry-types=polygon --show-errors --overwrite 2>&1 | tail -20
+          osmium export boundaries.osm.pbf -o boundaries.geojson -f geojson --geometry-types=polygon --overwrite
           python3 tools/regions.py split boundaries.geojson "$COUNTRY" out
-          # One region at a time: all of them in one pass needs more memory than a runner has (it was stopped).
+          # One region at a time: all of them in one pass needs more memory than a runner has.
           for id in $(python3 -c "import json; print(' '.join(r['id'] for r in json.load(open('out/regions.json'))))"); do
             osmium extract -p "out/$id.geojson" --strategy=smart --set-bounds --overwrite -o "out/$id.osm.pbf" country.osm.pbf
           done
-          rm -f country.osm.pbf boundaries.osm.pbf boundaries.geojson
+          rm -f country.osm.pbf boundaries.osm.pbf boundaries.geojson out/*.geojson
           ls -la out
 
       - name: Land and sea (osmdata.openstreetmap.de)
@@ -65,31 +60,86 @@ jobs:
           unzip -q land.zip && rm land.zip
           python3 tools/regions.py land out land-polygons-split-4326/land_polygons.shp
           rm -rf land-polygons-split-4326
+          for f in out/*-land.osm; do gzip -1 "$f"; done
+          ls -la out
 
-      # The runners of a public repository have 16 GB: the fast in-memory writer, unless a country asks for «hd».
-      - name: The maps (Mapsforge map writer)
-        run: |
-          mkdir -p maps
-          WRITER=$(python3 -c "import json,os; print(json.load(open('countries.json'))[os.environ['COUNTRY']].get('writer', 'ram'))")
-          for id in $(python3 -c "import json; print(' '.join(r['id'] for r in json.load(open('out/regions.json'))))"); do
-            box=$(python3 -c "import json; r=[x for x in json.load(open('out/regions.json')) if x['id']=='$id'][0]; print(','.join(str(v) for v in r['box']))")
-            osmium merge "out/$id.osm.pbf" "out/$id-land.osm" -o "out/$id-full.osm.pbf" --overwrite
-            echo "::group::$id ($box)"
-            java -Xmx12g -cp "$LIB/*" org.openstreetmap.osmosis.core.Osmosis -q \
-              --read-pbf file="out/$id-full.osm.pbf" \
-              --mapfile-writer file="maps/$id.map" type="$WRITER" bbox="$box" label-position=true polylabel=true threads=4 \
-                comment="FluxoNav map: $id. Map data (c) OpenStreetMap contributors, ODbL"
-            echo "::endgroup::"
-            rm -f "out/$id.osm.pbf" "out/$id-full.osm.pbf" "out/$id-land.osm"
-            ls -la "maps/$id.map"
-          done
-
-      - name: Publish (a release of the maps, the catalogue)
+      - name: The pieces to a working release, the maps' release made
+        id: list
         run: |
           TAG="$COUNTRY-$(date -u +%Y%m%d)"
+          WORK="work-$COUNTRY"
+          gh release delete "$WORK" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$WORK" out/regions.json out/*.osm.pbf out/*-land.osm.gz --title "$WORK (temporary)" \
+            --notes "Temporary pieces of the regional maps' build; removed when it ends." --latest=false --prerelease
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$TAG" maps/*.map --title "$TAG" \
+          gh release create "$TAG" out/regions.json --title "$TAG" --latest=false \
             --notes "Regional maps ($COUNTRY). Map data © OpenStreetMap contributors, ODbL 1.0 — openstreetmap.org/copyright"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "regions=$(python3 -c "import json; print(json.dumps([r['id'] for r in json.load(open('out/regions.json'))]))")" >> "$GITHUB_OUTPUT"
+
+  map:
+    needs: split
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        region: ${{ fromJSON(needs.split.outputs.regions) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Tools (osmium, osmosis with the Mapsforge map writer)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool > /dev/null
+          curl -sfL --retry 5 --retry-all-errors --retry-delay 10 -o osmosis.zip https://github.com/openstreetmap/osmosis/releases/download/0.49.2/osmosis-0.49.2.zip
+          unzip -q osmosis.zip -d osmosis
+          LIB=$(dirname "$(find osmosis -name 'osmosis-core-*.jar' | head -1)")
+          curl -sfL --retry 5 --retry-all-errors --retry-delay 10 -o "$LIB/mapsforge-map-writer-0.25.0-jar-with-dependencies.jar" \
+            https://repo1.maven.org/maven2/org/mapsforge/mapsforge-map-writer/0.25.0/mapsforge-map-writer-0.25.0-jar-with-dependencies.jar
+          echo "LIB=$LIB" >> "$GITHUB_ENV"
+
+      - name: ${{ matrix.region }}
+        env:
+          ID: ${{ matrix.region }}
+          TAG: ${{ needs.split.outputs.tag }}
+        run: |
+          mkdir -p out maps
+          gh release download "work-$COUNTRY" -D out -p regions.json -p "$ID.osm.pbf" -p "$ID-land.osm.gz"
+          gunzip "out/$ID-land.osm.gz"
+          box=$(python3 -c "import json,os; r=[x for x in json.load(open('out/regions.json')) if x['id']==os.environ['ID']][0]; print(','.join(str(v) for v in r['box']))")
+          osmium merge "out/$ID.osm.pbf" "out/$ID-land.osm" -o "out/$ID-full.osm.pbf" --overwrite
+          ls -la out
+          # The runners of a public repository have 16 GB: the fast in-memory writer, unless a country asks for «hd».
+          WRITER=$(python3 -c "import json,os; print(json.load(open('countries.json'))[os.environ['COUNTRY']].get('writer', 'ram'))")
+          time java -Xmx12g -cp "$LIB/*" org.openstreetmap.osmosis.core.Osmosis \
+            --read-pbf file="out/$ID-full.osm.pbf" \
+            --mapfile-writer file="maps/$ID.map" type="$WRITER" bbox="$box" label-position=true polylabel=true threads=4 \
+              comment="FluxoNav map: $ID. Map data (c) OpenStreetMap contributors, ODbL"
+          ls -la "maps/$ID.map"
+          gh release upload "$TAG" "maps/$ID.map" --clobber
+
+  catalog:
+    needs: [split, map]
+    if: always() && needs.split.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The catalogue (the maps written), the working release removed
+        env:
+          TAG: ${{ needs.split.outputs.tag }}
+        run: |
+          mkdir -p out maps old
+          gh release download "$TAG" -D out -p regions.json
+          gh release download "$TAG" -D maps -p "*.map"
+          ls -la maps
           gh release download catalog -p catalog.json -D old 2>/dev/null || true
           python3 tools/regions.py catalog out maps "$TAG" "$GITHUB_REPOSITORY" old/catalog.json catalog.json
           if gh release view catalog > /dev/null 2>&1; then
@@ -98,3 +148,5 @@ jobs:
             gh release create catalog catalog.json --title "Catalog" --latest=false \
               --notes "The list of the latest maps of every country (catalog.json), read by the FluxoNav app."
           fi
+          gh release delete-asset "$TAG" regions.json --yes || true
+          gh release delete "work-$COUNTRY" --yes --cleanup-tag || true
