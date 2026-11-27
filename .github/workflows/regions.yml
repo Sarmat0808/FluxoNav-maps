@@ -52,7 +52,10 @@ jobs:
           osmium fileinfo -e boundaries.osm.pbf | grep -E "Number of (nodes|ways|relations)" || true
           osmium export boundaries.osm.pbf -o boundaries.geojson -f geojson --geometry-types=polygon --show-errors --overwrite 2>&1 | tail -20
           python3 tools/regions.py split boundaries.geojson "$COUNTRY" out
-          osmium extract -c out/extract.json --strategy=smart --set-bounds --overwrite country.osm.pbf
+          # One region at a time: all of them in one pass needs more memory than a runner has (it was stopped).
+          for id in $(python3 -c "import json; print(' '.join(r['id'] for r in json.load(open('out/regions.json'))))"); do
+            osmium extract -p "out/$id.geojson" --strategy=smart --set-bounds --overwrite -o "out/$id.osm.pbf" country.osm.pbf
+          done
           rm -f country.osm.pbf boundaries.osm.pbf boundaries.geojson
           ls -la out
 
