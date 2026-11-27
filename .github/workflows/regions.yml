@@ -1,0 +1,94 @@
+name: Regional maps
+
+# A country's regions as Mapsforge maps (see README.md): run by hand for a country of countries.json. The maps go to a
+# release «<country>-<date>»; catalog.json in the release «catalog» lists the latest maps of every country.
+on:
+  workflow_dispatch:
+    inputs:
+      country:
+        description: "Country (countries.json): fi …"
+        required: true
+        default: fi
+
+permissions:
+  contents: write
+
+jobs:
+  maps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COUNTRY: ${{ inputs.country }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Tools (osmium, GDAL, osmosis with the Mapsforge map writer)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool gdal-bin > /dev/null
+          osmium --version | head -1
+          curl -sfL --retry 3 -o osmosis.zip https://github.com/openstreetmap/osmosis/releases/download/0.49.2/osmosis-0.49.2.zip
+          unzip -q osmosis.zip -d osmosis
+          LIB=$(dirname "$(find osmosis -name 'osmosis-core-*.jar' | head -1)")
+          curl -sfL --retry 3 -o "$LIB/mapsforge-map-writer-0.25.0-jar-with-dependencies.jar" \
+            https://repo1.maven.org/maven2/org/mapsforge/mapsforge-map-writer/0.25.0/mapsforge-map-writer-0.25.0-jar-with-dependencies.jar
+          echo "LIB=$LIB" >> "$GITHUB_ENV"
+
+      - name: The country's OpenStreetMap data (Geofabrik)
+        run: |
+          path=$(python3 -c "import json,os; print(json.load(open('countries.json'))[os.environ['COUNTRY']]['geofabrik'])")
+          curl -sfL --retry 3 -o country.osm.pbf "https://download.geofabrik.de/$path-latest.osm.pbf"
+          ls -la country.osm.pbf
+
+      - name: Its regions (OpenStreetMap's own boundaries)
+        run: |
+          osmium tags-filter country.osm.pbf r/boundary=administrative -o boundaries.osm.pbf --overwrite
+          osmium export boundaries.osm.pbf -o boundaries.geojson -f geojson --geometry-types=polygon --overwrite
+          python3 tools/regions.py split boundaries.geojson "$COUNTRY" out
+          osmium extract -c out/extract.json --strategy=smart --set-bounds --overwrite country.osm.pbf
+          rm -f country.osm.pbf boundaries.osm.pbf boundaries.geojson
+          ls -la out
+
+      - name: Land and sea (osmdata.openstreetmap.de)
+        run: |
+          curl -sfL --retry 3 -o land.zip https://osmdata.openstreetmap.de/download/land-polygons-split-4326.zip
+          unzip -q land.zip && rm land.zip
+          python3 tools/regions.py land out land-polygons-split-4326/land_polygons.shp
+          rm -rf land-polygons-split-4326
+
+      - name: The maps (Mapsforge map writer)
+        run: |
+          mkdir -p maps
+          for id in $(python3 -c "import json; print(' '.join(r['id'] for r in json.load(open('out/regions.json'))))"); do
+            box=$(python3 -c "import json; r=[x for x in json.load(open('out/regions.json')) if x['id']=='$id'][0]; print(','.join(str(v) for v in r['box']))")
+            osmium merge "out/$id.osm.pbf" "out/$id-land.osm" -o "out/$id-full.osm.pbf" --overwrite
+            echo "::group::$id ($box)"
+            java -Xmx5g -cp "$LIB/*" org.openstreetmap.osmosis.core.Osmosis -q \
+              --read-pbf file="out/$id-full.osm.pbf" \
+              --mapfile-writer file="maps/$id.map" type=hd bbox="$box" label-position=true polylabel=true threads=2 \
+                comment="FluxoNav map: $id. Map data (c) OpenStreetMap contributors, ODbL"
+            echo "::endgroup::"
+            rm -f "out/$id.osm.pbf" "out/$id-full.osm.pbf" "out/$id-land.osm"
+            ls -la "maps/$id.map"
+          done
+
+      - name: Publish (a release of the maps, the catalogue)
+        run: |
+          TAG="$COUNTRY-$(date -u +%Y%m%d)"
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" maps/*.map --title "$TAG" \
+            --notes "Regional maps ($COUNTRY). Map data © OpenStreetMap contributors, ODbL 1.0 — openstreetmap.org/copyright"
+          gh release download catalog -p catalog.json -D old 2>/dev/null || true
+          python3 tools/regions.py catalog out maps "$TAG" "$GITHUB_REPOSITORY" old/catalog.json catalog.json
+          if gh release view catalog > /dev/null 2>&1; then
+            gh release upload catalog catalog.json --clobber
+          else
+            gh release create catalog catalog.json --title "Catalog" --latest=false \
+              --notes "The list of the latest maps of every country (catalog.json), read by the FluxoNav app."
+          fi
