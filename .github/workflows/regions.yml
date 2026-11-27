@@ -49,7 +49,8 @@ jobs:
       - name: Its regions (OpenStreetMap's own boundaries)
         run: |
           osmium tags-filter country.osm.pbf r/boundary=administrative -o boundaries.osm.pbf --overwrite
-          osmium export boundaries.osm.pbf -o boundaries.geojson -f geojson --geometry-types=polygon --overwrite
+          osmium fileinfo -e boundaries.osm.pbf | grep -E "Number of (nodes|ways|relations)" || true
+          osmium export boundaries.osm.pbf -o boundaries.geojson -f geojson --geometry-types=polygon --show-errors --overwrite 2>&1 | tail -20
           python3 tools/regions.py split boundaries.geojson "$COUNTRY" out
           osmium extract -c out/extract.json --strategy=smart --set-bounds --overwrite country.osm.pbf
           rm -f country.osm.pbf boundaries.osm.pbf boundaries.geojson

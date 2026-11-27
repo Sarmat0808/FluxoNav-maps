@@ -95,6 +95,17 @@ def split(boundaries, country, out):
     iso = conf["iso"]
     feats = json.load(open(boundaries, encoding="utf-8"))["features"]
     os.makedirs(out, exist_ok=True)
+    # What the boundaries hold (to see why a level has nothing): the areas by their level, a few names of each.
+    levels = {}
+    for f in feats:
+        p = f.get("properties") or {}
+        key = (p.get("boundary"), str(p.get("admin_level")), (f.get("geometry") or {}).get("type"))
+        levels.setdefault(key, []).append(p.get("name"))
+    print("%d areas in the boundaries:" % len(feats))
+    for key in sorted(levels, key=str):
+        print("  %-60s %4d  %s" % (key, len(levels[key]), ", ".join(str(n) for n in levels[key][:5])))
+    if feats:
+        print("  properties of the first:", sorted((feats[0].get("properties") or {}).keys())[:30])
     regions, extracts, seen = [], [], set()
     for f in feats:
         p = f.get("properties") or {}
