@@ -33,17 +33,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq osmium-tool gdal-bin > /dev/null
           osmium --version | head -1
-          curl -sfL --retry 3 -o osmosis.zip https://github.com/openstreetmap/osmosis/releases/download/0.49.2/osmosis-0.49.2.zip
+          curl -sfL --retry 5 --retry-all-errors --retry-delay 10 -o osmosis.zip https://github.com/openstreetmap/osmosis/releases/download/0.49.2/osmosis-0.49.2.zip
           unzip -q osmosis.zip -d osmosis
           LIB=$(dirname "$(find osmosis -name 'osmosis-core-*.jar' | head -1)")
-          curl -sfL --retry 3 -o "$LIB/mapsforge-map-writer-0.25.0-jar-with-dependencies.jar" \
+          curl -sfL --retry 5 --retry-all-errors --retry-delay 10 -o "$LIB/mapsforge-map-writer-0.25.0-jar-with-dependencies.jar" \
             https://repo1.maven.org/maven2/org/mapsforge/mapsforge-map-writer/0.25.0/mapsforge-map-writer-0.25.0-jar-with-dependencies.jar
           echo "LIB=$LIB" >> "$GITHUB_ENV"
 
       - name: The country's OpenStreetMap data (Geofabrik)
         run: |
           path=$(python3 -c "import json,os; print(json.load(open('countries.json'))[os.environ['COUNTRY']]['geofabrik'])")
-          curl -sfL --retry 3 -o country.osm.pbf "https://download.geofabrik.de/$path-latest.osm.pbf"
+          curl -sfL --retry 5 --retry-all-errors --retry-delay 10 -o country.osm.pbf "https://download.geofabrik.de/$path-latest.osm.pbf"
           ls -la country.osm.pbf
 
       - name: Its regions (OpenStreetMap's own boundaries)
@@ -61,7 +61,7 @@ jobs:
 
       - name: Land and sea (osmdata.openstreetmap.de)
         run: |
-          curl -sfL --retry 3 -o land.zip https://osmdata.openstreetmap.de/download/land-polygons-split-4326.zip
+          curl -sfL --retry 5 --retry-all-errors --retry-delay 10 -o land.zip https://osmdata.openstreetmap.de/download/land-polygons-split-4326.zip
           unzip -q land.zip && rm land.zip
           python3 tools/regions.py land out land-polygons-split-4326/land_polygons.shp
           rm -rf land-polygons-split-4326
