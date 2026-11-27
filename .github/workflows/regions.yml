@@ -117,10 +117,11 @@ jobs:
           osmium merge "out/$ID.osm.pbf" "out/$ID-land.osm" -o "out/$ID-full.osm.pbf" --overwrite
           ls -la out
           # The runners of a public repository have 16 GB: the fast in-memory writer, unless a country asks for «hd».
+          # No «polylabel»: on a huge forest or bog with thousands of holes it ran for hours (Central Ostrobothnia).
           WRITER=$(python3 -c "import json,os; print(json.load(open('countries.json'))[os.environ['COUNTRY']].get('writer', 'ram'))")
           time java -Xmx12g -cp "$LIB/*" org.openstreetmap.osmosis.core.Osmosis \
             --read-pbf file="out/$ID-full.osm.pbf" \
-            --mapfile-writer file="maps/$ID.map" type="$WRITER" bbox="$box" label-position=true polylabel=true threads=4 \
+            --mapfile-writer file="maps/$ID.map" type="$WRITER" bbox="$box" label-position=true threads=4 \
               comment="FluxoNav map: $ID. Map data (c) OpenStreetMap contributors, ODbL"
           ls -la "maps/$ID.map"
           gh release upload "$TAG" "maps/$ID.map" --clobber
