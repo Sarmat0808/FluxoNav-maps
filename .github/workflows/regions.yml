@@ -62,16 +62,18 @@ jobs:
           python3 tools/regions.py land out land-polygons-split-4326/land_polygons.shp
           rm -rf land-polygons-split-4326
 
+      # The runners of a public repository have 16 GB: the fast in-memory writer, unless a country asks for «hd».
       - name: The maps (Mapsforge map writer)
         run: |
           mkdir -p maps
+          WRITER=$(python3 -c "import json,os; print(json.load(open('countries.json'))[os.environ['COUNTRY']].get('writer', 'ram'))")
           for id in $(python3 -c "import json; print(' '.join(r['id'] for r in json.load(open('out/regions.json'))))"); do
             box=$(python3 -c "import json; r=[x for x in json.load(open('out/regions.json')) if x['id']=='$id'][0]; print(','.join(str(v) for v in r['box']))")
             osmium merge "out/$id.osm.pbf" "out/$id-land.osm" -o "out/$id-full.osm.pbf" --overwrite
             echo "::group::$id ($box)"
-            java -Xmx5g -cp "$LIB/*" org.openstreetmap.osmosis.core.Osmosis -q \
+            java -Xmx12g -cp "$LIB/*" org.openstreetmap.osmosis.core.Osmosis -q \
               --read-pbf file="out/$id-full.osm.pbf" \
-              --mapfile-writer file="maps/$id.map" type=hd bbox="$box" label-position=true polylabel=true threads=2 \
+              --mapfile-writer file="maps/$id.map" type="$WRITER" bbox="$box" label-position=true polylabel=true threads=4 \
                 comment="FluxoNav map: $id. Map data (c) OpenStreetMap contributors, ODbL"
             echo "::endgroup::"
             rm -f "out/$id.osm.pbf" "out/$id-full.osm.pbf" "out/$id-land.osm"

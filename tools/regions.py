@@ -48,6 +48,47 @@ def box(geom):
     return [min(ys), min(xs), max(ys), max(xs)]   # south, west, north, east
 
 
+def simplify(pts, tol):
+    """Douglas–Peucker on a ring of [lon, lat] points."""
+    if len(pts) < 4:
+        return pts
+    keep = [False] * len(pts)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        a, b = stack.pop()
+        ax, ay = pts[a][0], pts[a][1]
+        bx, by = pts[b][0], pts[b][1]
+        dx, dy = bx - ax, by - ay
+        length = (dx * dx + dy * dy) ** 0.5
+        best, idx = 0.0, -1
+        for i in range(a + 1, b):
+            px, py = pts[i][0], pts[i][1]
+            d = abs(dy * (px - ax) - dx * (py - ay)) / length if length > 0 else ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
+            if d > best:
+                best, idx = d, i
+        if best > tol and idx > 0:
+            keep[idx] = True
+            stack += [(a, idx), (idx, b)]
+    return [q for q, k in zip(pts, keep) if k]
+
+
+def outline(geom, tol=0.003, min_area=0.0004):
+    """The region's shape for the app (which map holds a place — the boxes of neighbours overlap): its outer rings
+    without the tiny islands, simplified to ~300 m, as flat [lon, lat, lon, lat…] lists."""
+    out = []
+    for poly in rings_of(geom):
+        ring = poly[0]
+        xs = [q[0] for q in ring]
+        ys = [q[1] for q in ring]
+        if (max(xs) - min(xs)) * (max(ys) - min(ys)) < min_area:
+            continue
+        s = simplify(ring, tol)
+        if len(s) >= 4:
+            out.append([round(v, 4) for q in s for v in q[:2]])
+    return out
+
+
 def split(boundaries, country, out):
     conf = json.load(open("countries.json", encoding="utf-8"))[country]
     level = str(conf["level"])
@@ -78,7 +119,7 @@ def split(boundaries, country, out):
         extracts.append({"output": rid + ".osm.pbf", "polygon": {"file_name": poly, "file_type": "geojson"}})
         # A region with a country code of its own (the Åland Islands: AX) — the app finds its maps by the country.
         regions.append({"id": rid, "iso": conf.get("iso_by_region", {}).get(rid, iso), "names": names,
-                        "box": [round(v, 5) for v in box(g)]})
+                        "box": [round(v, 5) for v in box(g)], "shape": outline(g)})
     regions.sort(key=lambda r: r["id"])
     with open(os.path.join(out, "extract.json"), "w", encoding="utf-8") as w:
         json.dump({"directory": os.path.abspath(out), "extracts": extracts}, w, indent=1)
@@ -185,7 +226,7 @@ def catalog(out, maps, tag, repo, old_path, new_path):
         if not os.path.isfile(f):
             print("missing:", f)
             continue
-        items.append({"id": r["id"], "iso": r["iso"], "names": r["names"], "box": r["box"],
+        items.append({"id": r["id"], "iso": r["iso"], "names": r["names"], "box": r["box"], "shape": r.get("shape", []),
                       "file": r["id"] + ".map", "size": os.path.getsize(f), "sha256": sha256(f),
                       "url": "https://github.com/%s/releases/download/%s/%s.map" % (repo, tag, r["id"])})
     try:
